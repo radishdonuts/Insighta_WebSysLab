@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 type ApiTicket = {
   id?: unknown;
@@ -67,21 +67,6 @@ function deriveStepIndex(status: string): number {
   if (normalized.includes("progress") || normalized.includes("pending")) return 2;
   if (normalized.includes("review")) return 1;
   return 0;
-}
-
-function parseTitleDescription(description: string): { title: string; body: string } {
-  const match = description.match(/^Title:\s*(.+?)\n\n([\s\S]*)$/i);
-  if (!match) {
-    return {
-      title: "Complaint details",
-      body: description,
-    };
-  }
-
-  return {
-    title: match[1].trim() || "Complaint details",
-    body: match[2].trim() || description,
-  };
 }
 
 function formatDate(value: string): string {
@@ -156,11 +141,6 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
     };
   }, [params.id, token]);
 
-  const parsed = useMemo(
-    () => parseTitleDescription(ticket?.description ?? ""),
-    [ticket?.description]
-  );
-
   const currentStep = deriveStepIndex(ticket?.status ?? "");
   const priorityColors: Record<string, { bg: string; color: string; border: string }> = {
     High: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
@@ -217,7 +197,7 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
                     color: "var(--text)",
                   }}
                 >
-                  {parsed.title || `${ticket.ticketType || "Ticket"} details`}
+                  {`${ticket.ticketType || "Ticket"} details`}
                 </h3>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <span
@@ -263,7 +243,7 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
                   Description
                 </p>
                 <p style={{ color: "var(--text)", fontSize: "0.95rem", lineHeight: 1.6, margin: 0 }}>
-                  {parsed.body || ticket.description || "No description provided."}
+                  {ticket.description || "No description provided."}
                 </p>
               </div>
 

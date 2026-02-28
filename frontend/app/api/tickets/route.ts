@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 
 import { NextResponse } from "next/server";
 
+import { buildNlpInputText, runTicketNlpEnrichment, resolveUncategorizedCategoryId } from "@/lib/nlp/ticket-enrichment";
 import { getSupabaseServerClient } from "@/lib/supabase";
+import { createClient } from "@/utils/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -10,18 +12,13 @@ type JsonObject = Record<string, unknown>;
 type SupabaseServerClient = ReturnType<typeof getSupabaseServerClient>;
 
 type ParsedCreateTicketInput = {
+  title: string;
   description: string;
-  ticketType: string;
-  priority?: string;
+  ticketType: "Complaint";
   customerId?: string;
   guestEmail?: string;
   categoryIdInput?: string;
-  categoryNameInput?: string;
-  nlp: {
-    sentiment?: string;
-    detected_intent?: string;
-    issue_type?: string;
-  };
+  nlpText: string;
 };
 
 class ApiError extends Error {
@@ -35,12 +32,12 @@ class ApiError extends Error {
   }
 }
 
-// Keep these aligned with the actual Supabase enum values.
-const ALLOWED_TICKET_TYPES = new Set(["Complaint", "Feedback"]);
-const ALLOWED_PRIORITIES = new Set(["Low", "Medium", "High"]);
-const ALLOWED_SENTIMENTS = new Set(["Negative", "Neutral", "Positive"]);
+const TITLE_MAX_LENGTH = 120;
+const DESCRIPTION_MIN_LENGTH = 20;
+const DESCRIPTION_MAX_LENGTH = 5000;
 const GUEST_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TICKET_NUMBER_RETRIES = 3;
+const CUSTOMER_ID_BODY_KEYS = ["customer_id", "customerId", "user_id", "userId"] as const;
 
 function jsonError(status: number, error: string, details?: string) {
   return NextResponse.json(
@@ -53,12 +50,17 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function readFirstString(body: JsonObject, keys: string[]): string {
+function readFirstString(body: JsonObject, keys: readonly string[]): string {
   for (const key of keys) {
     const value = asTrimmedString(body[key]);
     if (value) return value;
   }
+
   return "";
+}
+
+function hasValueForAnyKey(body: JsonObject, keys: readonly string[]): boolean {
+  return keys.some((key) => asTrimmedString(body[key]).length > 0);
 }
 
 function isUuid(value: string): boolean {
@@ -67,29 +69,6 @@ function isUuid(value: string): boolean {
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function normalizePriority(raw: string): string {
-  const key = raw.toLowerCase();
-  if (key === "low") return "Low";
-  if (key === "medium") return "Medium";
-  if (key === "high") return "High";
-  return raw;
-}
-
-function normalizeTicketType(raw: string): string {
-  const key = raw.toLowerCase();
-  if (key === "complaint") return "Complaint";
-  if (key === "feedback") return "Feedback";
-  return raw;
-}
-
-function normalizeSentiment(raw: string): string {
-  const key = raw.toLowerCase();
-  if (key === "negative") return "Negative";
-  if (key === "neutral") return "Neutral";
-  if (key === "positive") return "Positive";
-  return raw;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -133,69 +112,68 @@ async function parseJsonBody(request: Request): Promise<JsonObject> {
   return body as JsonObject;
 }
 
-function parseCreateTicketInput(body: JsonObject): ParsedCreateTicketInput {
+function parseCreateTicketInput(
+  body: JsonObject,
+  authUserId: string | null
+): ParsedCreateTicketInput {
+  if (hasValueForAnyKey(body, CUSTOMER_ID_BODY_KEYS)) {
+    throw new ApiError(400, "customerId is derived from the authenticated session and must not be provided.");
+  }
+
+  const title = readFirstString(body, ["title"]);
   const description = readFirstString(body, ["description"]);
+  const guestEmailRaw =
+    readFirstString(body, ["guest_email", "guestEmail", "customer_email", "customerEmail"]) || undefined;
+  const guestEmail = guestEmailRaw?.toLowerCase();
+  const categoryIdInput = readFirstString(body, ["category_id", "categoryId"]) || undefined;
+
+  if (title.length > TITLE_MAX_LENGTH) {
+    throw new ApiError(400, `Title must be ${TITLE_MAX_LENGTH} characters or fewer.`);
+  }
+
   if (!description) {
     throw new ApiError(400, "Description is required.");
   }
 
-  // Keep backward-compatible aliases so older clients continue to work.
-  const customerId = readFirstString(body, ["customer_id", "customerId", "user_id", "userId"]) || undefined;
-  const guestEmailRaw =
-    readFirstString(body, ["guest_email", "guestEmail", "customer_email", "customerEmail"]) || undefined;
-  const guestEmail = guestEmailRaw?.toLowerCase();
-
-  if (customerId && guestEmail) {
-    throw new ApiError(400, "Provide either customerId or guestEmail, not both.");
+  if (description.length < DESCRIPTION_MIN_LENGTH) {
+    throw new ApiError(400, `Description must be at least ${DESCRIPTION_MIN_LENGTH} characters.`);
   }
 
-  if (!customerId && !guestEmail) {
-    throw new ApiError(400, "Either customerId (logged-in) or guestEmail must be provided.");
-  }
-
-  if (customerId && !isUuid(customerId)) {
-    throw new ApiError(400, "Customer ID must be a valid UUID.");
-  }
-
-  if (guestEmail && !isValidEmail(guestEmail)) {
-    throw new ApiError(400, "Guest email is invalid.");
-  }
-
-  const rawPriority = readFirstString(body, ["priority"]);
-  const priority = rawPriority ? normalizePriority(rawPriority) : undefined;
-
-  if (priority && !ALLOWED_PRIORITIES.has(priority)) {
-    throw new ApiError(400, "Priority must be one of: Low, Medium, High.");
+  if (description.length > DESCRIPTION_MAX_LENGTH) {
+    throw new ApiError(400, `Description must be ${DESCRIPTION_MAX_LENGTH} characters or fewer.`);
   }
 
   const rawTicketType = readFirstString(body, ["ticket_type", "ticketType", "type"]);
-  const ticketType = rawTicketType ? normalizeTicketType(rawTicketType) : "Complaint";
-
-  if (!ALLOWED_TICKET_TYPES.has(ticketType)) {
-    throw new ApiError(400, "Ticket type must be one of: Complaint, Feedback.");
+  if (rawTicketType && rawTicketType.toLowerCase() !== "complaint") {
+    throw new ApiError(400, 'ticketType must be "Complaint".');
   }
 
-  const rawSentiment = readFirstString(body, ["sentiment"]);
-  const sentiment = rawSentiment ? normalizeSentiment(rawSentiment) : undefined;
+  if (authUserId && guestEmail) {
+    throw new ApiError(400, "guestEmail cannot be provided when authenticated.");
+  }
 
-  if (sentiment && !ALLOWED_SENTIMENTS.has(sentiment)) {
-    throw new ApiError(400, "Sentiment must be one of: Negative, Neutral, Positive.");
+  if (!authUserId) {
+    if (!guestEmail) {
+      throw new ApiError(400, "guestEmail is required when submitting anonymously.");
+    }
+
+    if (!isValidEmail(guestEmail)) {
+      throw new ApiError(400, "Guest email is invalid.");
+    }
+  }
+
+  if (categoryIdInput && !isUuid(categoryIdInput)) {
+    throw new ApiError(400, "Category ID must be a valid UUID.");
   }
 
   return {
+    title,
     description,
-    ticketType,
-    priority,
-    customerId,
-    guestEmail,
-    categoryIdInput: readFirstString(body, ["category_id", "categoryId"]) || undefined,
-    categoryNameInput:
-      readFirstString(body, ["category", "category_name", "categoryName"]) || undefined,
-    nlp: {
-      sentiment,
-      detected_intent: readFirstString(body, ["detected_intent", "detectedIntent"]) || undefined,
-      issue_type: readFirstString(body, ["issue_type", "issueType"]) || undefined,
-    },
+    ticketType: "Complaint",
+    customerId: authUserId ?? undefined,
+    guestEmail: authUserId ? undefined : guestEmail,
+    categoryIdInput,
+    nlpText: buildNlpInputText(title, description),
   };
 }
 
@@ -229,19 +207,15 @@ async function resolveGuestId(supabase: SupabaseServerClient, email: string): Pr
   return String(inserted.id);
 }
 
-async function resolveCategoryId(
+async function resolveCategorySelection(
   supabase: SupabaseServerClient,
-  input: Pick<ParsedCreateTicketInput, "categoryIdInput" | "categoryNameInput">
-): Promise<string> {
-  if (input.categoryIdInput) {
-    if (!isUuid(input.categoryIdInput)) {
-      throw new ApiError(400, "Category ID must be a valid UUID.");
-    }
-
+  categoryIdInput?: string
+): Promise<{ categoryId: string; usedFallbackCategory: boolean }> {
+  if (categoryIdInput) {
     const { data, error } = await supabase
       .from("complaint_categories")
       .select("id")
-      .eq("id", input.categoryIdInput)
+      .eq("id", categoryIdInput)
       .eq("is_active", true)
       .limit(1)
       .maybeSingle();
@@ -254,62 +228,16 @@ async function resolveCategoryId(
       throw new ApiError(400, "Category not found or inactive.");
     }
 
-    return String(data.id);
+    return {
+      categoryId: String(data.id),
+      usedFallbackCategory: false,
+    };
   }
 
-  if (input.categoryNameInput) {
-    // Try exact match first, then case-insensitive fallback for friendlier client input.
-    const exact = await supabase
-      .from("complaint_categories")
-      .select("id")
-      .eq("category_name", input.categoryNameInput)
-      .eq("is_active", true)
-      .limit(1)
-      .maybeSingle();
-
-    if (exact.error) {
-      throw new Error(`Failed to resolve category: ${exact.error.message}`);
-    }
-
-    if (exact.data?.id) {
-      return String(exact.data.id);
-    }
-
-    const fallback = await supabase
-      .from("complaint_categories")
-      .select("id")
-      .ilike("category_name", input.categoryNameInput)
-      .eq("is_active", true)
-      .limit(1)
-      .maybeSingle();
-
-    if (fallback.error) {
-      throw new Error(`Failed to resolve category: ${fallback.error.message}`);
-    }
-
-    if (fallback.data?.id) {
-      return String(fallback.data.id);
-    }
-  }
-
-  // Last fallback: use the oldest active category so the insert still succeeds.
-  const { data: defaultCategory, error: defaultError } = await supabase
-    .from("complaint_categories")
-    .select("id")
-    .eq("is_active", true)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (defaultError) {
-    throw new Error(`Failed to resolve default category: ${defaultError.message}`);
-  }
-
-  if (!defaultCategory?.id) {
-    throw new ApiError(400, "No active complaint category found.");
-  }
-
-  return String(defaultCategory.id);
+  return {
+    categoryId: await resolveUncategorizedCategoryId(supabase),
+    usedFallbackCategory: true,
+  };
 }
 
 async function getNextTicketNumber(supabase: SupabaseServerClient): Promise<string> {
@@ -357,7 +285,6 @@ async function insertTicketWithRetry(
 
     lastError = error;
 
-    // Concurrent inserts can collide on the unique ticket_number.
     if (!isTicketNumberConflict(error)) {
       break;
     }
@@ -370,7 +297,6 @@ async function createGuestAccessToken(
   supabase: SupabaseServerClient,
   ticketId: string
 ): Promise<string | null> {
-  // Guests receive the raw token; only the hash is stored in the database.
   const rawToken = randomBytes(32).toString("hex");
 
   const { data: hashResult, error: hashError } = await supabase.rpc("sha256_hex", {
@@ -396,29 +322,75 @@ async function createGuestAccessToken(
   return rawToken;
 }
 
+async function runAsyncNlpEnrichment(input: {
+  supabase: SupabaseServerClient;
+  ticketId: string;
+  text: string;
+  allowCategoryOverride: boolean;
+  uncategorizedCategoryId?: string | null;
+}) {
+  console.info("[tickets] NLP enrichment started", { ticketId: input.ticketId });
+
+  try {
+    const result = await runTicketNlpEnrichment({
+      supabase: input.supabase,
+      ticketId: input.ticketId,
+      text: input.text,
+      allowCategoryOverride: input.allowCategoryOverride,
+      uncategorizedCategoryId: input.uncategorizedCategoryId ?? null,
+    });
+
+    console.info("[tickets] NLP enrichment completed", {
+      ticketId: input.ticketId,
+      nlpFieldsUpdated: result.nlpFieldsUpdated,
+      categoryUpdated: result.categoryUpdated,
+    });
+  } catch (error) {
+    console.error("[tickets] NLP enrichment failed", {
+      ticketId: input.ticketId,
+      error: getErrorMessage(error),
+    });
+  }
+}
+
 export async function POST(request: Request) {
   try {
+    const authClient = await createClient();
+    const {
+      data: { user },
+    } = await authClient.auth.getUser();
+
     const body = await parseJsonBody(request);
-    const input = parseCreateTicketInput(body);
+    const input = parseCreateTicketInput(body, user?.id ?? null);
     const supabase = getSupabaseServerClient();
 
-    const categoryId = await resolveCategoryId(supabase, input);
+    const category = await resolveCategorySelection(supabase, input.categoryIdInput);
     const guestId = input.guestEmail ? await resolveGuestId(supabase, input.guestEmail) : null;
 
     const insertPayload = compactObject({
       ticket_type: input.ticketType,
       description: input.description,
-      category_id: categoryId,
+      category_id: category.categoryId,
       customer_id: input.customerId,
       guest_id: guestId ?? undefined,
-      priority: input.priority,
-      ...input.nlp,
     });
 
     const ticket = await insertTicketWithRetry(supabase, insertPayload);
-    const guestAccessToken = guestId && ticket.id
-      ? await createGuestAccessToken(supabase, String(ticket.id))
+    const ticketId = asTrimmedString(ticket.id);
+
+    const guestAccessToken = guestId && ticketId
+      ? await createGuestAccessToken(supabase, ticketId)
       : null;
+
+    if (ticketId && input.nlpText) {
+      void runAsyncNlpEnrichment({
+        supabase,
+        ticketId,
+        text: input.nlpText,
+        allowCategoryOverride: category.usedFallbackCategory,
+        uncategorizedCategoryId: category.usedFallbackCategory ? category.categoryId : null,
+      });
+    }
 
     return NextResponse.json(
       {

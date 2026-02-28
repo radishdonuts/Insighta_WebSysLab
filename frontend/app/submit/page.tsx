@@ -26,6 +26,11 @@ type TicketCreateResponse = {
   };
 };
 
+const TITLE_MAX_LENGTH = 120;
+const DESCRIPTION_MIN_LENGTH = 20;
+const DESCRIPTION_MAX_LENGTH = 5000;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -33,6 +38,10 @@ function asString(value: unknown): string {
 function normalizeToken(value: unknown): string {
   const token = asString(value);
   return token ? token : "";
+}
+
+function isValidEmail(value: string): boolean {
+  return EMAIL_REGEX.test(value);
 }
 
 export default function SubmitPage() {
@@ -124,8 +133,23 @@ export default function SubmitPage() {
     const trimmedDescription = description.trim();
     const normalizedEmail = guestEmail.trim().toLowerCase();
 
+    if (trimmedTitle.length > TITLE_MAX_LENGTH) {
+      setError(`Title must be ${TITLE_MAX_LENGTH} characters or fewer.`);
+      return;
+    }
+
     if (!trimmedDescription) {
       setError("Please provide a complaint description.");
+      return;
+    }
+
+    if (trimmedDescription.length < DESCRIPTION_MIN_LENGTH) {
+      setError(`Description must be at least ${DESCRIPTION_MIN_LENGTH} characters.`);
+      return;
+    }
+
+    if (trimmedDescription.length > DESCRIPTION_MAX_LENGTH) {
+      setError(`Description must be ${DESCRIPTION_MAX_LENGTH} characters or fewer.`);
       return;
     }
 
@@ -134,20 +158,22 @@ export default function SubmitPage() {
       return;
     }
 
+    if (!authUserId && !isValidEmail(normalizedEmail)) {
+      setError("Please enter a valid guest email address.");
+      return;
+    }
+
     setError(null);
     setIsSubmitting(true);
 
     const payload: Record<string, string> = {
-      description: trimmedTitle
-        ? `Title: ${trimmedTitle}\n\n${trimmedDescription}`
-        : trimmedDescription,
+      description: trimmedDescription,
       ticketType: "Complaint",
     };
 
+    if (trimmedTitle) payload.title = trimmedTitle;
     if (categoryId) payload.categoryId = categoryId;
-    if (authUserId) {
-      payload.customerId = authUserId;
-    } else {
+    if (!authUserId) {
       payload.guestEmail = normalizedEmail;
     }
 
@@ -318,6 +344,7 @@ export default function SubmitPage() {
                 onFocus={() => setFocused("title")}
                 onBlur={() => setFocused(null)}
                 style={inputStyle("title")}
+                maxLength={TITLE_MAX_LENGTH}
               />
             </label>
 
@@ -383,6 +410,8 @@ export default function SubmitPage() {
                   lineHeight: "1.6",
                 }}
                 required
+                minLength={DESCRIPTION_MIN_LENGTH}
+                maxLength={DESCRIPTION_MAX_LENGTH}
               />
             </label>
 
