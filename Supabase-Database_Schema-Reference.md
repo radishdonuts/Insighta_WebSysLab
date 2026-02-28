@@ -67,6 +67,21 @@ Mirrors Supabase Auth users. A row is auto-created via the `handle_new_user` tri
 - `profiles_id_fkey` – FOREIGN KEY (`id`) → `auth.users(id)`
 - Unique on `email`
 
+**RLS / Policies**
+
+- Row Level Security should be **enabled** on `profiles`.
+- Authenticated users should be allowed to read **their own** profile row (required for frontend middleware / RBAC checks).
+
+```sql
+alter table public.profiles enable row level security;
+
+create policy "profiles_select_own"
+on public.profiles
+for select
+to authenticated
+using (id = auth.uid());
+```
+
 ---
 
 ### guest_contacts
@@ -360,6 +375,9 @@ begin
     email,
     first_name,
     last_name,
+    role,
+    is_active,
+    created_at,
     last_login_at
   )
   values (
@@ -367,6 +385,9 @@ begin
     new.email,
     nullif(new.raw_user_meta_data->>'first_name', ''),
     nullif(new.raw_user_meta_data->>'last_name', ''),
+    'Customer'::user_role,
+    true,
+    now(),
     null
   )
   on conflict (id) do update
