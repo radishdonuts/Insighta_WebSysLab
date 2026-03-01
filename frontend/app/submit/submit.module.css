@@ -1,0 +1,383 @@
+.container {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1rem;
+    background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
+    font-family: inherit;
+}
+
+.card {
+    width: 100%;
+    max-width: 600px;
+    background: var(--bg);
+    border-radius: 1rem;
+    padding: 2.5rem;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01);
+    border: 1px solid #e5e7eb;
+}
+
+.header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.headerIcon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    background: var(--surface);
+    color: var(--accent);
+    border-radius: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.header h1 {
+    font-size: 1.75rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.02em;
+}
+
+.header p {
+    color: var(--muted);
+    font-size: 0.95rem;
+}
+
+/* Stepper */
+.stepper {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 2.5rem;
+    position: relative;
+}
+
+.stepper::before {
+    content: "";
+    position: absolute;
+    top: 14px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #e5e7eb;
+    z-index: 0;
+}
+
+.stepperProgress {
+    position: absolute;
+    top: 14px;
+    left: 0;
+    height: 2px;
+    background: var(--accent);
+    z-index: 1;
+    transition: width 0.3s ease;
+}
+
+.step {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--bg);
+    padding: 0 0.5rem;
+}
+
+.stepCircle {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--muted);
+    transition: all 0.3s ease;
+}
+
+.stepActive .stepCircle {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.stepCompleted .stepCircle {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.stepLabel {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted);
+    text-align: center;
+}
+
+.stepActive .stepLabel {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* Form Fields */
+.formGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    justify-content: space-between;
+}
+
+.input {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1.5px solid #d1d5db;
+    border-radius: 0.5rem;
+    font-size: 0.95rem;
+    background: var(--bg);
+    color: var(--text);
+    transition: all 0.2s;
+    outline: none;
+}
+
+.input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.inputError {
+    border-color: #ef4444;
+}
+
+.inputError:focus {
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+}
+
+.inputValid {
+    border-color: #22c55e;
+}
+
+.errorMessage {
+    color: #ef4444;
+    font-size: 0.8rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+}
+
+.charCount {
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+.charCountWarn {
+    color: #ef4444;
+}
+
+/* Navigation Buttons */
+.buttonGroup {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 2rem;
+    gap: 1rem;
+}
+
+.btnPrimary {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: background 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    flex: 1;
+}
+
+.btnPrimary:hover {
+    background: var(--accent-hover);
+}
+
+.btnPrimary:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.btnSecondary {
+    background: var(--bg);
+    color: var(--text);
+    border: 1.5px solid #e5e7eb;
+    padding: 0.75rem 1.5rem;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex: 1;
+}
+
+.btnSecondary:hover {
+    background: #f9fafb;
+    border-color: #d1d5db;
+}
+
+/* Summary Step */
+.summaryBox {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.summaryItem {
+    margin-bottom: 1rem;
+}
+
+.summaryItem:last-child {
+    margin-bottom: 0;
+}
+
+.summaryLabel {
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.summaryValue {
+    font-size: 0.95rem;
+    color: var(--text);
+    font-weight: 500;
+    word-break: break-word;
+}
+
+/* Success Step */
+.successContainer {
+    text-align: center;
+    padding: 2rem 0;
+}
+
+.successIcon {
+    color: #22c55e;
+    width: 4rem;
+    height: 4rem;
+    margin: 0 auto 1.5rem;
+    animation: scaleIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.successTitle {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+}
+
+.successDesc {
+    color: var(--muted);
+    margin-bottom: 2rem;
+}
+
+.ticketRefBox {
+    background: var(--surface);
+    border: 1px dashed var(--accent);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.ticketRefLabel {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+}
+
+.ticketRefValue {
+    font-size: 1.75rem;
+    font-weight: 800;
+    color: var(--text);
+    letter-spacing: 0.05em;
+}
+
+.tokenBox {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    margin-bottom: 2rem;
+}
+
+.tokenInput {
+    background: transparent;
+    border: none;
+    font-family: monospace;
+    font-size: 0.9rem;
+    color: var(--text);
+    width: 100%;
+    outline: none;
+}
+
+.copyBtn {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+}
+
+.copyBtn:hover {
+    background: var(--surface);
+}
+
+.spinner {
+    width: 1.2rem;
+    height: 1.2rem;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes scaleIn {
+    from {
+        transform: scale(0);
+    }
+
+    to {
+        transform: scale(1);
+    }
+}

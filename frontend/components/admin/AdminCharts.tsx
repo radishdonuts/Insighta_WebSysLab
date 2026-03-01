@@ -110,7 +110,7 @@ function LineChart({
         viewBox={`0 0 ${viewWidth} ${viewHeight}`}
         role="img"
         aria-label="Ticket volume over time"
-        preserveAspectRatio="none"
+        preserveAspectRatio="xMidYMid meet"
       >
         <line
           x1={leftPad}

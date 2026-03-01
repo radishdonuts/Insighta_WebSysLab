@@ -1,443 +1,427 @@
 "use client";
 
+import React, { useState, useEffect, useMemo, FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
-
 import { createClient as createSupabaseClient } from "@/utils/supabase/client";
-
-type CategoryOption = {
-  id: string;
-  name: string;
-};
-
-type CategoriesResponse = {
-  ok?: boolean;
-  categories?: Array<{ id?: unknown; name?: unknown }>;
-};
-
-type TicketCreateResponse = {
-  error?: string;
-  details?: string;
-  accessToken?: string;
-  ticket?: {
-    id?: string | null;
-    reference?: string | null;
-  };
-};
+import { FileUpload } from "@/components/FileUpload";
+import styles from "./submit.module.css";
 
 const TITLE_MAX_LENGTH = 120;
 const DESCRIPTION_MIN_LENGTH = 20;
 const DESCRIPTION_MAX_LENGTH = 5000;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function asString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeToken(value: unknown): string {
-  const token = asString(value);
-  return token ? token : "";
-}
-
-function isValidEmail(value: string): boolean {
-  return EMAIL_REGEX.test(value);
-}
+type CategoryOption = { id: string; name: string };
+type CategoriesResponse = { ok?: boolean; categories?: Array<{ id?: unknown; name?: unknown }> };
+type TicketCreateResponse = { error?: string; details?: string; accessToken?: string; ticket?: { id?: string; reference?: string } };
 
 export default function SubmitPage() {
-  const [title, setTitle] = useState("");
-  const [categoryId, setCategoryId] = useState("");
-  const [description, setDescription] = useState("");
-  const [guestEmail, setGuestEmail] = useState("");
-  const [focused, setFocused] = useState<string | null>(null);
-
-  const [categories, setCategories] = useState<CategoryOption[]>([]);
-  const [authUserId, setAuthUserId] = useState<string | null>(null);
-  const [loadingInitial, setLoadingInitial] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   const router = useRouter();
   const supabase = useMemo(() => createSupabaseClient(), []);
 
+  // Form State
+  const [step, setStep] = useState(1);
+  const [guestEmail, setGuestEmail] = useState("");
+  const [title, setTitle] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [description, setDescription] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+
+  // Validation State (touched fields)
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  // Meta State
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [categories, setCategories] = useState<CategoryOption[]>([]);
+  const [loadingInitial, setLoadingInitial] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Success State
+  const [successData, setSuccessData] = useState<{ trackingNumber: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
-
     async function loadInitialData() {
       setLoadingInitial(true);
-
       const [authResult, categoriesResult] = await Promise.all([
         supabase.auth.getUser(),
         fetch("/api/categories", { cache: "no-store" }).catch(() => null),
       ]);
-
       if (cancelled) return;
 
       setAuthUserId(authResult.data.user?.id ?? null);
+      // Skip email step if logged in
+      if (authResult.data.user?.id) {
+        setStep(2);
+      }
 
       if (categoriesResult?.ok) {
         const payload = (await categoriesResult.json()) as CategoriesResponse;
         const nextCategories = (payload.categories ?? [])
           .map((entry) => {
-            const id = asString(entry.id);
-            const name = asString(entry.name);
-            if (!id || !name) return null;
-            return { id, name };
+            const id = typeof entry.id === "string" ? entry.id : null;
+            const name = typeof entry.name === "string" ? entry.name : null;
+            return id && name ? { id, name } : null;
           })
-          .filter((entry): entry is CategoryOption => entry !== null);
-
+          .filter((e): e is CategoryOption => e !== null);
         setCategories(nextCategories);
       }
-
       setLoadingInitial(false);
     }
-
     void loadInitialData();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [supabase]);
 
-  const inputStyle = (name: string): CSSProperties => ({
-    width: "100%",
-    padding: "10px 14px",
-    fontSize: "14px",
-    fontFamily: "'DM Sans', sans-serif",
-    border: `1.5px solid ${focused === name ? "#4f46e5" : "#d1d5db"}`,
-    borderRadius: "8px",
-    outline: "none",
-    background: "#fff",
-    color: "#111827",
-    boxSizing: "border-box",
-    transition: "border-color 0.2s, box-shadow 0.2s",
-    boxShadow: focused === name ? "0 0 0 3px rgba(79,70,229,0.1)" : "none",
-  });
+  // Validators
+  const errors = useMemo(() => {
+    const e: Record<string, string> = {};
+    if (!authUserId && guestEmail) {
+      if (!EMAIL_REGEX.test(guestEmail)) e.guestEmail = "Invalid email format.";
+    } else if (!authUserId && touched.guestEmail) {
+      e.guestEmail = "Email is required for guests.";
+    }
 
-  const labelStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-    fontSize: "13px",
-    fontWeight: 600,
-    color: "#374151",
-    fontFamily: "'DM Sans', sans-serif",
-    letterSpacing: "0.01em",
+    if (touched.title) {
+      if (!title.trim()) e.title = "Title is required.";
+      else if (title.trim().length > TITLE_MAX_LENGTH) e.title = `Max ${TITLE_MAX_LENGTH} characters.`;
+    }
+
+    if (touched.description) {
+      if (!description.trim()) e.description = "Description is required.";
+      else if (description.trim().length < DESCRIPTION_MIN_LENGTH) e.description = `Min ${DESCRIPTION_MIN_LENGTH} characters.`;
+      else if (description.trim().length > DESCRIPTION_MAX_LENGTH) e.description = `Max ${DESCRIPTION_MAX_LENGTH} characters.`;
+    }
+
+    if (touched.category && !categoryId) {
+      e.category = "Please select a category.";
+    }
+
+    return e;
+  }, [guestEmail, title, description, categoryId, touched, authUserId]);
+
+  const handleBlur = (field: string) => setTouched((t) => ({ ...t, [field]: true }));
+
+  const nextStep = () => {
+    if (step === 1 && !authUserId) {
+      setTouched((t) => ({ ...t, guestEmail: true }));
+      if (!guestEmail || errors.guestEmail) return;
+    }
+    if (step === 2) {
+      setTouched((t) => ({ ...t, title: true, description: true, category: true }));
+      if (!title || !description || !categoryId || errors.title || errors.description || errors.category) return;
+    }
+    setStep(s => s + 1);
   };
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const prevStep = () => {
+    // Don't let logged-in users go back to guest email step
+    if (step === 2 && authUserId) return;
+    setStep(s => Math.max(1, s - 1));
+  };
+
+  async function onSubmit() {
     if (isSubmitting) return;
-
-    const trimmedTitle = title.trim();
-    const trimmedDescription = description.trim();
-    const normalizedEmail = guestEmail.trim().toLowerCase();
-
-    if (trimmedTitle.length > TITLE_MAX_LENGTH) {
-      setError(`Title must be ${TITLE_MAX_LENGTH} characters or fewer.`);
-      return;
-    }
-
-    if (!trimmedDescription) {
-      setError("Please provide a complaint description.");
-      return;
-    }
-
-    if (trimmedDescription.length < DESCRIPTION_MIN_LENGTH) {
-      setError(`Description must be at least ${DESCRIPTION_MIN_LENGTH} characters.`);
-      return;
-    }
-
-    if (trimmedDescription.length > DESCRIPTION_MAX_LENGTH) {
-      setError(`Description must be ${DESCRIPTION_MAX_LENGTH} characters or fewer.`);
-      return;
-    }
-
-    if (!authUserId && !normalizedEmail) {
-      setError("Email is required when submitting as a guest.");
-      return;
-    }
-
-    if (!authUserId && !isValidEmail(normalizedEmail)) {
-      setError("Please enter a valid guest email address.");
-      return;
-    }
-
-    setError(null);
+    setSubmitError(null);
     setIsSubmitting(true);
 
-    const payload: Record<string, string> = {
-      description: trimmedDescription,
-      ticketType: "Complaint",
-    };
+    const payload = new FormData();
+    payload.set("title", title.trim());
+    payload.set("description", description.trim());
+    payload.set("ticketType", "Complaint");
+    payload.set("categoryId", categoryId);
 
-    if (trimmedTitle) payload.title = trimmedTitle;
-    if (categoryId) payload.categoryId = categoryId;
     if (!authUserId) {
-      payload.guestEmail = normalizedEmail;
+      payload.set("guestEmail", guestEmail.trim().toLowerCase());
+    }
+
+    for (const file of files) {
+      payload.append("attachments", file, file.name);
     }
 
     try {
       const response = await fetch("/api/tickets", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: payload,
       });
 
       const data = (await response.json()) as TicketCreateResponse;
 
       if (!response.ok) {
-        throw new Error(asString(data.error) || asString(data.details) || "Failed to submit complaint.");
+        throw new Error(data.error || data.details || "Failed to submit complaint.");
       }
 
-      const query = new URLSearchParams();
-      const ticketId = asString(data.ticket?.id);
-      const reference = asString(data.ticket?.reference);
-      const token = normalizeToken(data.accessToken);
+      const ticketId = data.ticket?.id;
+      const token = data.accessToken;
 
-      if (ticketId) query.set("ticketId", ticketId);
-      if (reference) query.set("reference", reference);
-      if (token) query.set("token", token);
+      if (!ticketId) {
+        throw new Error("Invalid response from server.");
+      }
 
-      router.push(`/submit/confirmation${query.size ? `?${query.toString()}` : ""}`);
-    } catch (submitError) {
-      setError(
-        submitError instanceof Error ? submitError.message : "Failed to submit complaint."
-      );
+      // For authenticated users, no access token is returned — redirect to tickets
+      if (authUserId && !token) {
+        router.push("/tickets");
+        return;
+      }
+
+      // For guest users, show the success screen with token
+      if (!token) {
+        throw new Error("No access token received. Please contact support.");
+      }
+
+      setSuccessData({ trackingNumber: token });
+      setStep(5); // Success step
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Failed to submit complaint.");
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  const copyToken = () => {
+    if (successData) {
+      navigator.clipboard.writeText(successData.trackingNumber);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const renderStepProgress = () => {
+    const steps = [
+      { num: 1, label: "Your Details" },
+      { num: 2, label: "Complaint" },
+      { num: 3, label: "Attachments" },
+      { num: 4, label: "Review" }
+    ];
+
+    return (
+      <div className={styles.stepper} aria-label="Progress">
+        <div className={styles.stepperProgress} style={{ width: `${((step - 1) / 3) * 100}%` }} />
+        {steps.map(s => (
+          <div key={s.num} className={`${styles.step} ${step === s.num ? styles.stepActive : ''} ${step > s.num ? styles.stepCompleted : ''}`}>
+            <div className={styles.stepCircle}>{step > s.num ? "✓" : s.num}</div>
+            <div className={styles.stepLabel}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  if (loadingInitial) {
+    return (
+      <div className={styles.container}>
+        <div className={styles.card} style={{ textAlign: "center" }}>
+          <div className={styles.spinner} style={{ borderColor: "var(--accent)", borderTopColor: "transparent", margin: "0 auto 1rem" }} />
+          <p>Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&display=swap');
+    <main className={styles.container}>
+      <div className={styles.card}>
 
-        .submit-btn {
-          width: 100%;
-          padding: 11px;
-          background: #4f46e5;
-          color: #fff;
-          border: none;
-          border-radius: 8px;
-          font-size: 14px;
-          font-weight: 600;
-          font-family: 'DM Sans', sans-serif;
-          cursor: pointer;
-          letter-spacing: 0.02em;
-          transition: background 0.2s, transform 0.1s;
-        }
+        {step < 5 && (
+          <>
+            <header className={styles.header}>
+              <div className={styles.headerIcon}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+              </div>
+              <h1>Submit a Complaint</h1>
+              <p>We'll review your complaint and get back to you.</p>
+            </header>
+            {renderStepProgress()}
+          </>
+        )}
 
-        .submit-btn:hover { background: #4338ca; }
-        .submit-btn:active { transform: scale(0.99); }
-        .submit-btn:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-          transform: none;
-        }
+        {submitError && step < 5 && (
+          <div className={styles.errorMessage} style={{ marginBottom: '1.5rem', padding: '1rem', background: '#fef2f2', borderRadius: '0.5rem' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+            {submitError}
+          </div>
+        )}
 
-        .card {
-          animation: fadeUp 0.4s ease both;
-        }
-
-        .submit-error {
-          margin: 0;
-          font-size: 13px;
-          font-weight: 600;
-          color: #b91c1c;
-        }
-
-        .submit-hint {
-          margin: 0;
-          font-size: 12px;
-          color: #6b7280;
-          font-weight: 500;
-        }
-
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(16px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-
-      <main
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "40px 16px",
-          fontFamily: "'DM Sans', sans-serif",
-          background: "linear-gradient(180deg, #f0f4ff 0%, #ffffff 100%)",
-        }}
-      >
-        <section
-          className="card"
-          style={{
-            width: "100%",
-            maxWidth: 460,
-            background: "#ffffff",
-            borderRadius: "16px",
-            padding: "40px 36px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.06), 0 8px 32px rgba(0,0,0,0.08)",
-          }}
-        >
-          <header style={{ marginBottom: 28 }}>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 40,
-                height: 40,
-                background: "#eef2ff",
-                borderRadius: "10px",
-                marginBottom: 16,
-              }}
-            >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#4f46e5"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-            </div>
-            <h1
-              style={{
-                margin: 0,
-                fontSize: "22px",
-                fontWeight: 700,
-                color: "#111827",
-                fontFamily: "'DM Serif Display', serif",
-                letterSpacing: "-0.3px",
-              }}
-            >
-              Submit a Complaint
-            </h1>
-            <p
-              style={{
-                margin: "6px 0 0",
-                fontSize: "13.5px",
-                color: "#6b7280",
-                fontWeight: 400,
-              }}
-            >
-              We&apos;ll review your complaint and get back to you.
-            </p>
-          </header>
-
-          <form onSubmit={onSubmit} style={{ display: "grid", gap: 18 }}>
-            <label style={labelStyle}>
-              Title
+        {/* STEP 1: Details (Guest Only) */}
+        {step === 1 && !authUserId && (
+          <div className="step-content">
+            <div className={styles.formGroup}>
+              <label htmlFor="email" className={styles.label}>Email Address</label>
               <input
-                value={title}
-                placeholder="Brief summary of the issue"
-                onChange={(event) => setTitle(event.target.value)}
-                onFocus={() => setFocused("title")}
-                onBlur={() => setFocused(null)}
-                style={inputStyle("title")}
-                maxLength={TITLE_MAX_LENGTH}
+                id="email"
+                type="email"
+                value={guestEmail}
+                onChange={e => setGuestEmail(e.target.value)}
+                onBlur={() => handleBlur("guestEmail")}
+                placeholder="you@example.com"
+                className={`${styles.input} ${touched.guestEmail ? (errors.guestEmail ? styles.inputError : styles.inputValid) : ''}`}
               />
-            </label>
+              {touched.guestEmail && errors.guestEmail && (
+                <span className={styles.errorMessage}>{errors.guestEmail}</span>
+              )}
+            </div>
+            <div className={styles.buttonGroup}>
+              <button type="button" onClick={() => router.push("/")} className={styles.btnSecondary}>Cancel</button>
+              <button type="button" onClick={nextStep} className={styles.btnPrimary}>Continue</button>
+            </div>
+          </div>
+        )}
 
-            <label style={labelStyle}>
-              Category
+        {/* STEP 2: Complaint Details */}
+        {step === 2 && (
+          <div className="step-content">
+            <div className={styles.formGroup}>
+              <label htmlFor="categoryId" className={styles.label}>Category</label>
               <select
+                id="categoryId"
                 value={categoryId}
-                onChange={(event) => setCategoryId(event.target.value)}
-                onFocus={() => setFocused("category")}
-                onBlur={() => setFocused(null)}
-                style={{
-                  ...inputStyle("category"),
-                  appearance: "none",
-                  backgroundImage:
-                    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E\")",
-                  backgroundRepeat: "no-repeat",
-                  backgroundPosition: "right 14px center",
-                  paddingRight: "36px",
-                  color: categoryId ? "#111827" : "#9ca3af",
-                  cursor: "pointer",
-                }}
+                onChange={e => setCategoryId(e.target.value)}
+                onBlur={() => handleBlur("category")}
+                className={`${styles.input} ${touched.category ? (errors.category ? styles.inputError : styles.inputValid) : ''}`}
               >
-                <option value="">Use default category</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id} style={{ color: "#111827" }}>
-                    {category.name}
-                  </option>
-                ))}
+                <option value="">Select a category...</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
-            </label>
+              {touched.category && errors.category && <span className={styles.errorMessage}>{errors.category}</span>}
+            </div>
 
-            {!authUserId ? (
-              <label style={labelStyle}>
-                Email
-                <input
-                  type="email"
-                  value={guestEmail}
-                  placeholder="you@example.com"
-                  onChange={(event) => setGuestEmail(event.target.value)}
-                  onFocus={() => setFocused("email")}
-                  onBlur={() => setFocused(null)}
-                  style={inputStyle("email")}
-                  required
-                  autoComplete="email"
-                />
+            <div className={styles.formGroup}>
+              <label htmlFor="title" className={styles.label}>
+                Title
+                <span className={`${styles.charCount} ${title.length > TITLE_MAX_LENGTH ? styles.charCountWarn : ''}`}>
+                  {TITLE_MAX_LENGTH - title.length}
+                </span>
               </label>
-            ) : (
-              <p className="submit-hint">Submitting as a signed-in user.</p>
-            )}
-
-            <label style={labelStyle}>
-              Description
-              <textarea
-                value={description}
-                placeholder="Please describe your complaint in detail..."
-                onChange={(event) => setDescription(event.target.value)}
-                onFocus={() => setFocused("description")}
-                onBlur={() => setFocused(null)}
-                rows={5}
-                style={{
-                  ...inputStyle("description"),
-                  resize: "vertical",
-                  lineHeight: "1.6",
-                }}
-                required
-                minLength={DESCRIPTION_MIN_LENGTH}
-                maxLength={DESCRIPTION_MAX_LENGTH}
+              <input
+                id="title"
+                type="text"
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                onBlur={() => handleBlur("title")}
+                placeholder="Brief summary of the issue"
+                maxLength={TITLE_MAX_LENGTH}
+                className={`${styles.input} ${touched.title ? (errors.title ? styles.inputError : styles.inputValid) : ''}`}
               />
-            </label>
+              {touched.title && errors.title && <span className={styles.errorMessage}>{errors.title}</span>}
+            </div>
 
-            {loadingInitial ? <p className="submit-hint">Loading ticket settings...</p> : null}
-            {error ? <p className="submit-error">{error}</p> : null}
+            <div className={styles.formGroup}>
+              <label htmlFor="description" className={styles.label}>
+                Description
+                <span className={`${styles.charCount} ${description.length > DESCRIPTION_MAX_LENGTH - 100 ? styles.charCountWarn : ''}`}>
+                  {description.length}/{DESCRIPTION_MAX_LENGTH}
+                </span>
+              </label>
+              <textarea
+                id="description"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                onBlur={() => handleBlur("description")}
+                placeholder="Please describe your complaint in detail..."
+                rows={6}
+                maxLength={DESCRIPTION_MAX_LENGTH}
+                className={`${styles.input} ${touched.description ? (errors.description ? styles.inputError : styles.inputValid) : ''}`}
+                style={{ resize: "vertical" }}
+              />
+              {touched.description && errors.description && <span className={styles.errorMessage}>{errors.description}</span>}
+            </div>
 
-            <button type="submit" className="submit-btn" style={{ marginTop: 4 }} disabled={isSubmitting}>
-              {isSubmitting ? "Submitting..." : "Submit Complaint"}
-            </button>
-          </form>
+            <div className={styles.buttonGroup}>
+              <button type="button" onClick={prevStep} className={styles.btnSecondary}>Back</button>
+              <button type="button" onClick={nextStep} className={styles.btnPrimary}>Continue</button>
+            </div>
+          </div>
+        )}
 
-          <p
-            style={{
-              textAlign: "center",
-              marginTop: 20,
-              fontSize: "13px",
-              color: "#9ca3af",
-            }}
-          >
-            Changed your mind?{" "}
-            <Link href="/" style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 500 }}>
-              Go back home
-            </Link>
-          </p>
-        </section>
-      </main>
-    </>
+        {/* STEP 3: Attachments */}
+        {step === 3 && (
+          <div className="step-content">
+            <div className={styles.formGroup}>
+              <label className={styles.label}>Supporting Documents (Optional)</label>
+              <FileUpload files={files} onChange={setFiles} />
+            </div>
+            <div className={styles.buttonGroup}>
+              <button type="button" onClick={prevStep} className={styles.btnSecondary}>Back</button>
+              <button type="button" onClick={nextStep} className={styles.btnPrimary}>Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 4: Review */}
+        {step === 4 && (
+          <div className="step-content">
+            <div className={styles.summaryBox}>
+              {!authUserId && (
+                <div className={styles.summaryItem}>
+                  <div className={styles.summaryLabel}>Email</div>
+                  <div className={styles.summaryValue}>{guestEmail}</div>
+                </div>
+              )}
+              <div className={styles.summaryItem}>
+                <div className={styles.summaryLabel}>Category</div>
+                <div className={styles.summaryValue}>{categories.find(c => c.id === categoryId)?.name}</div>
+              </div>
+              <div className={styles.summaryItem}>
+                <div className={styles.summaryLabel}>Title</div>
+                <div className={styles.summaryValue}>{title}</div>
+              </div>
+              <div className={styles.summaryItem}>
+                <div className={styles.summaryLabel}>Description</div>
+                <div className={styles.summaryValue}>{description.substring(0, 150)}{description.length > 150 ? "..." : ""}</div>
+              </div>
+              <div className={styles.summaryItem}>
+                <div className={styles.summaryLabel}>Attachments</div>
+                <div className={styles.summaryValue}>{files.length} file(s)</div>
+              </div>
+            </div>
+
+            <div className={styles.buttonGroup}>
+              <button type="button" onClick={prevStep} className={styles.btnSecondary} disabled={isSubmitting}>Back</button>
+              <button type="button" onClick={onSubmit} className={styles.btnPrimary} disabled={isSubmitting}>
+                {isSubmitting ? <><span className={styles.spinner} /> Submitting...</> : "Submit Complaint"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 5: Success */}
+        {step === 5 && successData && (
+          <div className={styles.successContainer}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={styles.successIcon}>
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <h2 className={styles.successTitle}>Complaint Submitted</h2>
+            <p className={styles.successDesc}>Your complaint has been successfully recorded.</p>
+
+            <div className={styles.ticketRefBox}>
+              <div className={styles.ticketRefLabel}>Tracking Number</div>
+              <div className={styles.ticketRefValue}>{successData.trackingNumber}</div>
+            </div>
+
+            <div className={styles.tokenBox}>
+              <input type="text" value={successData.trackingNumber} readOnly className={styles.tokenInput} />
+              <button onClick={copyToken} className={styles.copyBtn}>{copied ? "Copied!" : "Copy Number"}</button>
+            </div>
+
+            <p style={{ fontSize: "0.85rem", color: "var(--muted)", marginBottom: "2rem" }}>
+              Please save this tracking number. You will need it to track your ticket status at <Link href="/track" style={{ color: "var(--accent)" }}>/track</Link>.
+            </p>
+
+            <div className={styles.buttonGroup}>
+              <button onClick={() => { setStep(authUserId ? 2 : 1); setTitle(""); setDescription(""); setFiles([]); setGuestEmail(""); setSuccessData(null); }} className={styles.btnSecondary}>
+                Submit Another
+              </button>
+              <Link href={`/track?token=${successData.trackingNumber}`} className={styles.btnPrimary} style={{ textDecoration: 'none' }}>
+                Track Ticket
+              </Link>
+            </div>
+          </div>
+        )}
+
+      </div>
+    </main>
   );
 }

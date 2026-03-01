@@ -89,6 +89,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               </Link>
             ) : null}
 
+            {session.status === "authenticated" && session.role !== "Staff" && session.role !== "Admin" ? (
+              <Link href="/tickets" className="nav-link">
+                My Tickets
+              </Link>
+            ) : null}
+
             <div
               className={`auth-indicator ${
                 session.status === "authenticated"

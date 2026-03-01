@@ -1,0 +1,145 @@
+/* Base */
+.container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1.5rem;
+    text-align: center;
+    font-family: inherit;
+    width: 100%;
+    height: 100%;
+    min-height: 200px;
+}
+
+/* Loading State */
+.spinnerWrapper {
+    margin-bottom: 1rem;
+}
+
+.spinner {
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 3px solid rgba(37, 99, 235, 0.15);
+    /* light accent */
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.loadingText {
+    color: var(--muted);
+    font-size: 0.95rem;
+    font-weight: 500;
+    animation: pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 0.7;
+    }
+
+    50% {
+        opacity: 1;
+    }
+}
+
+/* Empty State */
+.emptyIcon {
+    width: 3.5rem;
+    height: 3.5rem;
+    color: #9ca3af;
+    margin-bottom: 1rem;
+    background: #f3f4f6;
+    border-radius: 50%;
+    padding: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.emptyTitle {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+}
+
+.emptyDesc {
+    color: var(--muted);
+    font-size: 0.95rem;
+    max-width: 320px;
+    line-height: 1.5;
+    margin-bottom: 1.5rem;
+}
+
+.btnSecondary {
+    background: white;
+    color: var(--text);
+    border: 1px solid #d1d5db;
+    padding: 0.6rem 1.25rem;
+    border-radius: 0.5rem;
+    font-weight: 500;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btnSecondary:hover {
+    background: #f9fafb;
+}
+
+/* Error State */
+.errorBox {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 1rem;
+    padding: 2rem;
+    max-width: 480px;
+    width: 100%;
+}
+
+.errorIcon {
+    color: #ef4444;
+    margin-bottom: 1rem;
+    display: flex;
+    justify-content: center;
+}
+
+.errorTitle {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: #991b1b;
+    margin-bottom: 0.5rem;
+}
+
+.errorDesc {
+    color: #b91c1c;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    margin-bottom: 1.5rem;
+}
+
+.btnDanger {
+    background: #ef4444;
+    color: white;
+    border: none;
+    padding: 0.6rem 1.25rem;
+    border-radius: 0.5rem;
+    font-weight: 500;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.btnDanger:hover {
+    background: #dc2626;
+}

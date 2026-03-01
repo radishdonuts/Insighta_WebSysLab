@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import { NextResponse } from "next/server";
 
+import { isEmailConfigured, sendTicketCreatedEmail } from "@/lib/email";
 import { buildNlpInputText, runTicketNlpEnrichment, resolveUncategorizedCategoryId } from "@/lib/nlp/ticket-enrichment";
 import { getSupabaseServerClient } from "@/lib/supabase";
 import { createClient } from "@/utils/supabase/server";
@@ -21,6 +22,11 @@ type ParsedCreateTicketInput = {
   nlpText: string;
 };
 
+type ParsedRequestPayload = {
+  body: JsonObject;
+  files: File[];
+};
+
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -37,7 +43,20 @@ const DESCRIPTION_MIN_LENGTH = 20;
 const DESCRIPTION_MAX_LENGTH = 5000;
 const GUEST_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TICKET_NUMBER_RETRIES = 3;
+const MAX_GUEST_TRACKING_RETRIES = 4;
 const CUSTOMER_ID_BODY_KEYS = ["customer_id", "customerId", "user_id", "userId"] as const;
+const TRACKING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const MAX_ATTACHMENT_FILES = 5;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_TYPES = new Set<string>([
+  "application/pdf",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "attachments";
 
 function jsonError(status: number, error: string, details?: string) {
   return NextResponse.json(
@@ -264,6 +283,74 @@ function compactObject<T extends Record<string, unknown>>(obj: T): Partial<T> {
   ) as Partial<T>;
 }
 
+function mapFormDataToBody(formData: FormData): JsonObject {
+  const body: JsonObject = {};
+
+  const entries: Array<[string, string]> = [
+    ["title", "title"],
+    ["description", "description"],
+    ["ticketType", "ticketType"],
+    ["guestEmail", "guestEmail"],
+    ["guest_email", "guest_email"],
+    ["categoryId", "categoryId"],
+    ["category_id", "category_id"],
+  ];
+
+  for (const [sourceKey, targetKey] of entries) {
+    const value = formData.get(sourceKey);
+    if (typeof value === "string") {
+      body[targetKey] = value;
+    }
+  }
+
+  return body;
+}
+
+function sanitizeFileName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "file";
+  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+function parseFormFiles(formData: FormData): File[] {
+  const files = formData
+    .getAll("attachments")
+    .filter((entry): entry is File => entry instanceof File && entry.size > 0);
+
+  if (files.length > MAX_ATTACHMENT_FILES) {
+    throw new ApiError(400, `You can upload at most ${MAX_ATTACHMENT_FILES} attachments.`);
+  }
+
+  for (const file of files) {
+    if (!ALLOWED_ATTACHMENT_TYPES.has(file.type)) {
+      throw new ApiError(400, `Unsupported attachment type: ${file.name}`);
+    }
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      throw new ApiError(400, `Attachment exceeds 10MB: ${file.name}`);
+    }
+  }
+
+  return files;
+}
+
+async function parseRequestPayload(request: Request): Promise<ParsedRequestPayload> {
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+
+  if (contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+    return {
+      body: mapFormDataToBody(formData),
+      files: parseFormFiles(formData),
+    };
+  }
+
+  return {
+    body: await parseJsonBody(request),
+    files: [],
+  };
+}
+
 async function insertTicketWithRetry(
   supabase: SupabaseServerClient,
   payload: Record<string, unknown>
@@ -297,29 +384,82 @@ async function createGuestAccessToken(
   supabase: SupabaseServerClient,
   ticketId: string
 ): Promise<string | null> {
-  const rawToken = randomBytes(32).toString("hex");
+  for (let attempt = 1; attempt <= MAX_GUEST_TRACKING_RETRIES; attempt += 1) {
+    const rawToken = buildGuestTrackingCode();
 
-  const { data: hashResult, error: hashError } = await supabase.rpc("sha256_hex", {
-    input: rawToken,
-  });
+    const { error: insertError } = await supabase.from("ticket_access_tokens").insert({
+      ticket_id: ticketId,
+      token_hash: rawToken,
+      expires_at: new Date(Date.now() + GUEST_TOKEN_TTL_MS).toISOString(),
+    });
 
-  if (hashError || !hashResult) {
-    console.error("Failed to hash guest token:", hashError?.message);
-    return null;
+    if (!insertError) {
+      return rawToken;
+    }
+
+    const code = getErrorCode(insertError);
+    if (code !== "23505") {
+      console.error("Failed to store guest access token:", insertError.message);
+      return null;
+    }
   }
 
-  const { error: insertError } = await supabase.from("ticket_access_tokens").insert({
-    ticket_id: ticketId,
-    token_hash: String(hashResult),
-    expires_at: new Date(Date.now() + GUEST_TOKEN_TTL_MS).toISOString(),
-  });
+  console.error("Failed to store guest access token: exceeded retry limit.");
+  return null;
+}
 
-  if (insertError) {
-    console.error("Failed to store guest access token:", insertError.message);
-    return null;
+function buildGuestTrackingCode(): string {
+  const bytes = randomBytes(12);
+  let value = "";
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    value += TRACKING_CODE_ALPHABET[bytes[index] % TRACKING_CODE_ALPHABET.length];
   }
 
-  return rawToken;
+  return `TRK-${value.slice(0, 4)}-${value.slice(4, 8)}-${value.slice(8, 12)}`;
+}
+
+async function uploadAttachmentsForTicket(
+  supabase: SupabaseServerClient,
+  ticketId: string,
+  files: File[]
+): Promise<number> {
+  if (files.length === 0) return 0;
+
+  let uploadedCount = 0;
+
+  for (const file of files) {
+    const safeName = sanitizeFileName(file.name);
+    const storagePath = `${ticketId}/${Date.now()}-${randomBytes(4).toString("hex")}-${safeName}`;
+    const bytes = await file.arrayBuffer();
+
+    const { error: uploadError } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(storagePath, bytes, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: file.type || "application/octet-stream",
+      });
+
+    if (uploadError) {
+      throw new Error(`Failed to upload attachment ${file.name}: ${uploadError.message}`);
+    }
+
+    const { error: attachmentError } = await supabase.from("attachments").insert({
+      ticket_id: ticketId,
+      file_name: file.name,
+      file_type: file.type || null,
+      file_path: storagePath,
+    });
+
+    if (attachmentError) {
+      throw new Error(`Failed to save attachment metadata for ${file.name}: ${attachmentError.message}`);
+    }
+
+    uploadedCount += 1;
+  }
+
+  return uploadedCount;
 }
 
 async function runAsyncNlpEnrichment(input: {
@@ -353,6 +493,38 @@ async function runAsyncNlpEnrichment(input: {
   }
 }
 
+async function sendTicketCreatedEmailSafe(input: {
+  recipientEmail: string | null;
+  trackingNumber: string | null;
+  ticketType: string;
+  ticketId: string | null;
+}) {
+  if (!isEmailConfigured()) {
+    return;
+  }
+
+  const recipientEmail = asTrimmedString(input.recipientEmail);
+  const trackingNumber = asTrimmedString(input.trackingNumber);
+
+  if (!recipientEmail || !trackingNumber) {
+    return;
+  }
+
+  try {
+    await sendTicketCreatedEmail({
+      to: recipientEmail,
+      trackingNumber,
+      ticketType: input.ticketType,
+    });
+  } catch (error) {
+    console.error("[tickets] Failed to send ticket creation email", {
+      ticketId: input.ticketId,
+      recipientEmail,
+      error: getErrorMessage(error),
+    });
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const authClient = await createClient();
@@ -360,7 +532,8 @@ export async function POST(request: Request) {
       data: { user },
     } = await authClient.auth.getUser();
 
-    const body = await parseJsonBody(request);
+    const payload = await parseRequestPayload(request);
+    const body = payload.body;
     const input = parseCreateTicketInput(body, user?.id ?? null);
     const supabase = getSupabaseServerClient();
 
@@ -378,9 +551,21 @@ export async function POST(request: Request) {
     const ticket = await insertTicketWithRetry(supabase, insertPayload);
     const ticketId = asTrimmedString(ticket.id);
 
-    const guestAccessToken = guestId && ticketId
+    const guestAccessToken = ticketId
       ? await createGuestAccessToken(supabase, ticketId)
       : null;
+
+    const attachmentsUploaded = ticketId
+      ? await uploadAttachmentsForTicket(supabase, ticketId, payload.files)
+      : 0;
+
+    const recipientEmail = input.guestEmail ?? asTrimmedString(user?.email);
+    await sendTicketCreatedEmailSafe({
+      recipientEmail,
+      trackingNumber: guestAccessToken,
+      ticketType: input.ticketType,
+      ticketId: ticketId || null,
+    });
 
     if (ticketId && input.nlpText) {
       void runAsyncNlpEnrichment({
@@ -402,7 +587,8 @@ export async function POST(request: Request) {
           priority: ticket.priority ?? null,
           createdAt: ticket.submitted_at ?? null,
         },
-        ...(guestAccessToken ? { accessToken: guestAccessToken } : {}),
+        ...(guestAccessToken && guestId ? { accessToken: guestAccessToken } : {}),
+        attachmentsUploaded,
       },
       { status: 201 }
     );

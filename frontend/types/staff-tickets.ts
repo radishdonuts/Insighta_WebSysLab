@@ -55,6 +55,7 @@ export type StaffAttachmentMetadata = {
   fileName: string;
   fileType: string | null;
   filePath: string;
+  signedUrl: string | null;
   uploadedAt: string;
 };
 

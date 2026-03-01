@@ -242,6 +242,24 @@ export default function StaffTicketDetailClient({ ticketId }: { ticketId: string
                       <strong>{item.fileName}</strong>
                       <span className={styles.mutedText}>{item.fileType ?? "Unknown type"}</span>
                       <span className={styles.bodyText}>{item.filePath}</span>
+                      {item.signedUrl ? (
+                        <a href={item.signedUrl} target="_blank" rel="noreferrer" className={styles.textLink}>
+                          Open attachment
+                        </a>
+                      ) : null}
+                      {item.signedUrl && (item.fileType ?? "").startsWith("image/") ? (
+                        <img
+                          src={item.signedUrl}
+                          alt={item.fileName}
+                          style={{
+                            marginTop: 8,
+                            maxWidth: 320,
+                            width: "100%",
+                            borderRadius: 10,
+                            border: "1px solid rgba(148, 163, 184, 0.35)",
+                          }}
+                        />
+                      ) : null}
                     </div>
                     <span className={styles.metaText}>{formatDateTime(item.uploadedAt)}</span>
                   </li>
@@ -274,7 +292,7 @@ export default function StaffTicketDetailClient({ ticketId }: { ticketId: string
           </section>
 
           <section className={styles.card}>
-            <div className={styles.sectionHeader}><h2 className={styles.sectionTitle}>Feedback (Read-only)</h2></div>
+            <div className={styles.sectionHeader}><h2 className={styles.sectionTitle}>Feedback</h2></div>
             {!ticket.feedback ? (
               <p className={styles.stateText}>No feedback submitted for this ticket.</p>
             ) : (

@@ -1,14 +1,16 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
+
+import { createClient as createSupabaseClient } from "@/utils/supabase/client";
 
 type LookupResponse = {
   ok?: boolean;
   message?: string;
   ticket?: {
-    ticket_id?: unknown;
-    id?: unknown;
+    status?: unknown;
+    guest_tracking_number?: unknown;
   };
 };
 
@@ -46,31 +48,62 @@ export default function TrackPage() {
 }
 
 function TrackPageContent() {
+  const supabase = useMemo(() => createSupabaseClient(), []);
   const [tokenInput, setTokenInput] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusResult, setStatusResult] = useState<{ trackingNumber: string; status: string } | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   const router = useRouter();
   const searchParams = useSearchParams();
 
   useEffect(() => {
+    let active = true;
+
+    async function checkAuth() {
+      const { data } = await supabase.auth.getUser();
+      if (!active) return;
+
+      if (data.user) {
+        router.replace("/tickets");
+        return;
+      }
+
+      setCheckingAuth(false);
+    }
+
+    void checkAuth();
+    return () => {
+      active = false;
+    };
+  }, [router, supabase]);
+
+  useEffect(() => {
+    if (checkingAuth) return;
+
     const tokenFromQuery = asString(searchParams.get("token"));
     if (tokenFromQuery) {
       setTokenInput(tokenFromQuery);
     }
-  }, [searchParams]);
+  }, [checkingAuth, searchParams]);
+
+  if (checkingAuth) {
+    return <TrackPageShell isSearching />;
+  }
 
   async function onSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSearching) return;
 
-    const token = extractToken(tokenInput);
-    if (!token) {
-      setError("Enter a ticket access token first.");
-      return;
-    }
+      const token = extractToken(tokenInput);
+      if (!token) {
+      setError("Enter your tracking number first.");
+        return;
+      }
 
     setError(null);
+    setStatusResult(null);
     setIsSearching(true);
 
     try {
@@ -84,12 +117,13 @@ function TrackPageContent() {
         throw new Error(asString(data.message) || "Ticket lookup failed.");
       }
 
-      const ticketId = asString(data.ticket?.ticket_id) || asString(data.ticket?.id);
-      if (!ticketId) {
-        throw new Error("Ticket lookup returned no ticket ID.");
+      const status = asString(data.ticket?.status);
+      if (!status) {
+        throw new Error("Ticket lookup returned no status.");
       }
 
-      router.push(`/ticket/${encodeURIComponent(ticketId)}?token=${encodeURIComponent(token)}`);
+      const trackingNumber = asString(data.ticket?.guest_tracking_number) || token;
+      setStatusResult({ trackingNumber, status });
     } catch (lookupError) {
       setError(lookupError instanceof Error ? lookupError.message : "Ticket lookup failed.");
     } finally {
@@ -97,7 +131,7 @@ function TrackPageContent() {
     }
   }
 
-  return <TrackPageShell tokenInput={tokenInput} setTokenInput={setTokenInput} error={error} isSearching={isSearching} onSearch={onSearch} />;
+  return <TrackPageShell tokenInput={tokenInput} setTokenInput={setTokenInput} error={error} isSearching={isSearching} onSearch={onSearch} statusResult={statusResult} />;
 }
 
 function TrackPageShell({
@@ -106,12 +140,14 @@ function TrackPageShell({
   error = null,
   isSearching = false,
   onSearch,
+  statusResult,
 }: {
   tokenInput?: string;
   setTokenInput?: (value: string) => void;
   error?: string | null;
   isSearching?: boolean;
   onSearch?: (event: FormEvent<HTMLFormElement>) => void;
+  statusResult?: { trackingNumber: string; status: string } | null;
 }) {
   return (
     <main style={{ background: "var(--surface)", minHeight: "100vh", padding: "48px 1rem" }}>
@@ -145,7 +181,7 @@ function TrackPageShell({
               marginBottom: "1.5rem",
             }}
           >
-            Use the token from your confirmation screen to check your ticket details.
+            Use your guest tracking number from the confirmation screen to check your ticket status.
           </p>
 
           <form onSubmit={onSearch} style={{ display: "grid", gap: 12 }}>
@@ -158,11 +194,11 @@ function TrackPageShell({
                 color: "var(--text)",
               }}
             >
-              Access Token
+              Tracking Number
               <input
                 value={tokenInput}
                 onChange={(event) => setTokenInput?.(event.target.value)}
-                placeholder="Paste your ticket token"
+                placeholder="TRK-XXXX-XXXX-XXXX"
                 style={{
                   width: "100%",
                   padding: "0.6rem 0.75rem",
@@ -185,6 +221,33 @@ function TrackPageShell({
 
             {error ? (
               <p style={{ margin: 0, color: "#b91c1c", fontSize: "0.875rem", fontWeight: 500 }}>{error}</p>
+            ) : null}
+
+            {statusResult ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "0.85rem 1rem",
+                  borderRadius: "0.65rem",
+                  border: "1px solid #dbeafe",
+                  background: "#eff6ff",
+                  display: "grid",
+                  gap: 4,
+                }}
+              >
+                <p style={{ margin: 0, fontSize: "0.78rem", color: "#1e3a8a", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                  Tracking Number
+                </p>
+                <p style={{ margin: 0, fontFamily: "monospace", fontSize: "0.95rem", color: "#1e40af" }}>
+                  {statusResult.trackingNumber}
+                </p>
+                <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "#1e3a8a", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                  Current Status
+                </p>
+                <p style={{ margin: 0, fontSize: "1rem", fontWeight: 700, color: "#0f172a" }}>
+                  {statusResult.status}
+                </p>
+              </div>
             ) : null}
 
             <button

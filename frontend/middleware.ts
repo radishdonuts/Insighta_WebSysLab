@@ -9,9 +9,9 @@ const ROLE_PROTECTED_PATHS: ReadonlyArray<{
   prefix: "/staff" | "/admin";
   minimumRole: UserRole;
 }> = [
-  { prefix: "/staff", minimumRole: "Staff" },
-  { prefix: "/admin", minimumRole: "Admin" },
-];
+    { prefix: "/staff", minimumRole: "Staff" },
+    { prefix: "/admin", minimumRole: "Admin" },
+  ];
 
 function matchesPathPrefix(pathname: string, prefix: string) {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
@@ -36,6 +36,16 @@ export async function middleware(request: NextRequest) {
   const isAuthOnlyRoute = AUTH_ONLY_PATHS.some((prefix) =>
     matchesPathPrefix(pathname, prefix)
   );
+
+  // INS-101: Allow guest token-based access to /ticket/:id?token=...
+  const hasGuestToken = isAuthOnlyRoute
+    && matchesPathPrefix(pathname, "/ticket")
+    && request.nextUrl.searchParams.has("token");
+
+  if (hasGuestToken) {
+    return NextResponse.next({ request });
+  }
+
   const needsAuth = Boolean(roleProtectedRoute) || isAuthOnlyRoute;
 
   if (!needsAuth) {

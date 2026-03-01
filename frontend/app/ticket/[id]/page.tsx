@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
+import { FeedbackForm } from "@/components/FeedbackForm";
+
 type ApiTicket = {
   id?: unknown;
   ticket_id?: unknown;
@@ -20,6 +22,7 @@ type ApiTicket = {
   submitted_at?: unknown;
   lastUpdatedAt?: unknown;
   last_updated_at?: unknown;
+  guest_tracking_number?: unknown;
 };
 
 type TicketResponse = {
@@ -38,6 +41,17 @@ type TicketDetail = {
   description: string;
   submittedAt: string;
   lastUpdatedAt: string;
+  guestTrackingNumber: string;
+};
+
+type FeedbackPayload = {
+  feedback?: {
+    id?: unknown;
+    rating?: unknown;
+    comment?: unknown;
+    submitted_at?: unknown;
+  } | null;
+  error?: string;
 };
 
 const STEPS = ["Received", "In Review", "In Progress", "Resolved"] as const;
@@ -57,6 +71,7 @@ function toTicketDetail(input: ApiTicket, fallbackId: string): TicketDetail {
     description: asString(input.description),
     submittedAt: asString(input.submittedAt) || asString(input.submitted_at),
     lastUpdatedAt: asString(input.lastUpdatedAt) || asString(input.last_updated_at),
+    guestTrackingNumber: asString(input.guest_tracking_number),
   };
 }
 
@@ -79,6 +94,11 @@ function formatDate(value: string): string {
   }).format(new Date(timestamp));
 }
 
+function isResolvedLike(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === "resolved" || normalized === "closed";
+}
+
 export default function TicketDetailPage({ params }: { params: { id: string } }) {
   return (
     <Suspense fallback={<TicketDetailFallback id={params.id} />}>
@@ -94,6 +114,7 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [feedbackInitial, setFeedbackInitial] = useState<{ rating: number; comment: string } | undefined>();
 
   useEffect(() => {
     let cancelled = false;
@@ -103,25 +124,33 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
       setError(null);
 
       try {
-        const endpoint = token
+        const primaryEndpoint = token
           ? `/api/ticket/lookup?token=${encodeURIComponent(token)}`
           : `/api/ticket/${encodeURIComponent(params.id)}`;
 
-        const response = await fetch(endpoint, { cache: "no-store" });
-        const payload = (await response.json()) as TicketResponse;
+        const primaryResponse = await fetch(primaryEndpoint, { cache: "no-store" });
+        const primaryPayload = (await primaryResponse.json()) as TicketResponse;
 
-        if (!response.ok || payload.ok === false) {
-          throw new Error(asString(payload.message) || "Failed to load ticket.");
+        if (primaryResponse.ok && primaryPayload.ok !== false && primaryPayload.ticket) {
+          if (!cancelled) {
+            setTicket(toTicketDetail(primaryPayload.ticket, params.id));
+          }
+          return;
         }
 
-        const rawTicket = payload.ticket;
-        if (!rawTicket) {
-          throw new Error("No ticket data returned.");
+        if (token) {
+          const fallbackResponse = await fetch(`/api/ticket/${encodeURIComponent(params.id)}`, { cache: "no-store" });
+          const fallbackPayload = (await fallbackResponse.json()) as TicketResponse;
+
+          if (fallbackResponse.ok && fallbackPayload.ok !== false && fallbackPayload.ticket) {
+            if (!cancelled) {
+              setTicket(toTicketDetail(fallbackPayload.ticket, params.id));
+            }
+            return;
+          }
         }
 
-        if (!cancelled) {
-          setTicket(toTicketDetail(rawTicket, params.id));
-        }
+        throw new Error(asString(primaryPayload.message) || "Failed to load ticket.");
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load ticket.");
@@ -141,7 +170,64 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
     };
   }, [params.id, token]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFeedback() {
+      if (!ticket) {
+        setFeedbackInitial(undefined);
+        return;
+      }
+
+      const query = token ? `?token=${encodeURIComponent(token)}` : "";
+      try {
+        const response = await fetch(`/api/ticket/${encodeURIComponent(params.id)}/feedback${query}`, {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          if (!cancelled) setFeedbackInitial(undefined);
+          return;
+        }
+
+        const payload = (await response.json()) as FeedbackPayload;
+        const feedback = payload.feedback;
+        const rating = typeof feedback?.rating === "number" ? feedback.rating : 0;
+        const comment = asString(feedback?.comment);
+
+        if (!cancelled) {
+          setFeedbackInitial(rating >= 1 && rating <= 5 ? { rating, comment } : undefined);
+        }
+      } catch {
+        if (!cancelled) setFeedbackInitial(undefined);
+      }
+    }
+
+    void loadFeedback();
+    return () => {
+      cancelled = true;
+    };
+  }, [params.id, ticket, token]);
+
+  async function submitFeedback(data: { rating: number; comment: string }) {
+    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    const response = await fetch(`/api/ticket/${encodeURIComponent(params.id)}/feedback${query}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating: data.rating, comment: data.comment }),
+    });
+
+    const payload = (await response.json()) as FeedbackPayload;
+    if (!response.ok) {
+      throw new Error(asString(payload.error) || "Failed to submit feedback.");
+    }
+
+    setFeedbackInitial({ rating: data.rating, comment: data.comment });
+  }
+
   const currentStep = deriveStepIndex(ticket?.status ?? "");
+  const displayIdentifier = token || ticket?.guestTrackingNumber || ticket?.reference || ticket?.id || params.id;
+  const displayLabel = token ? "Tracking" : "Ticket";
   const priorityColors: Record<string, { bg: string; color: string; border: string }> = {
     High: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
     Medium: { bg: "#fffbeb", color: "#b45309", border: "#fde68a" },
@@ -160,7 +246,7 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
             color: "var(--text)",
           }}
         >
-          Ticket #{ticket?.reference || ticket?.id || params.id}
+          {displayLabel}: {displayIdentifier}
         </h1>
 
         <section
@@ -261,6 +347,14 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
               </div>
 
               <div style={{ borderTop: "1px solid #e5e7eb" }} />
+
+              {isResolvedLike(ticket.status) || !!feedbackInitial ? (
+                <FeedbackForm
+                  ticketId={ticket.reference || ticket.id}
+                  onSubmit={submitFeedback}
+                  initialData={feedbackInitial}
+                />
+              ) : null}
 
               <div>
                 <p
@@ -412,7 +506,7 @@ function TicketDetailFallback({ id }: { id: string }) {
             color: "var(--text)",
           }}
         >
-          Ticket #{id}
+          Ticket: {id}
         </h1>
         <section
           style={{
