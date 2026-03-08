@@ -4,7 +4,7 @@ import { createServerClient } from "@supabase/ssr";
 import { hasMinimumRole, isUserRole } from "@/lib/auth/roles";
 import type { UserRole } from "@/types/auth";
 
-const AUTH_ONLY_PATHS = ["/ticket"] as const;
+const AUTH_ONLY_PATHS = ["/ticket", "/submit"] as const;
 const ROLE_PROTECTED_PATHS: ReadonlyArray<{
   prefix: "/staff" | "/admin";
   minimumRole: UserRole;

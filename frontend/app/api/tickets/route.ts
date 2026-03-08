@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import { NextResponse } from "next/server";
 
@@ -17,8 +17,7 @@ type ParsedCreateTicketInput = {
   title: string;
   description: string;
   ticketType: "Complaint";
-  customerId?: string;
-  guestEmail?: string;
+  customerId: string;
   categoryInput?: string;
   nlpText: string;
 };
@@ -42,11 +41,9 @@ class ApiError extends Error {
 const TITLE_MAX_LENGTH = 120;
 const DESCRIPTION_MIN_LENGTH = 20;
 const DESCRIPTION_MAX_LENGTH = 5000;
-const GUEST_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TICKET_NUMBER_RETRIES = 3;
-const MAX_GUEST_TRACKING_RETRIES = 4;
 const CUSTOMER_ID_BODY_KEYS = ["customer_id", "customerId", "user_id", "userId"] as const;
-const TRACKING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const TICKET_REFERENCE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_ATTACHMENT_FILES = 5;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_TYPES = new Set<string>([
@@ -87,10 +84,6 @@ function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object") {
@@ -112,10 +105,6 @@ function isTicketNumberConflict(error: unknown): boolean {
   const code = getErrorCode(error);
   const message = getErrorMessage(error).toLowerCase();
   return (code === "23505" || message.includes("duplicate")) && message.includes("ticket_number");
-}
-
-function sha256Hex(input: string): string {
-  return createHash("sha256").update(input, "utf8").digest("hex");
 }
 
 function isPayloadConstraintError(error: unknown): boolean {
@@ -153,15 +142,16 @@ function parseCreateTicketInput(
   body: JsonObject,
   authUserId: string | null
 ): ParsedCreateTicketInput {
+  if (!authUserId) {
+    throw new ApiError(401, "You must be signed in to submit a ticket.");
+  }
+
   if (hasValueForAnyKey(body, CUSTOMER_ID_BODY_KEYS)) {
     throw new ApiError(400, "customerId is derived from the authenticated session and must not be provided.");
   }
 
   const title = readFirstString(body, ["title"]);
   const description = readFirstString(body, ["description"]);
-  const guestEmailRaw =
-    readFirstString(body, ["guest_email", "guestEmail", "customer_email", "customerEmail"]) || undefined;
-  const guestEmail = guestEmailRaw?.toLowerCase();
   const categoryInput = readFirstString(body, ["category_id", "categoryId", "category_name", "categoryName"]) || undefined;
 
   if (!title) {
@@ -189,18 +179,8 @@ function parseCreateTicketInput(
     throw new ApiError(400, 'ticketType must be "Complaint".');
   }
 
-  if (authUserId && guestEmail) {
-    throw new ApiError(400, "guestEmail cannot be provided when authenticated.");
-  }
-
-  if (!authUserId) {
-    if (!guestEmail) {
-      throw new ApiError(400, "guestEmail is required when submitting anonymously.");
-    }
-
-    if (!isValidEmail(guestEmail)) {
-      throw new ApiError(400, "Guest email is invalid.");
-    }
+  if (hasValueForAnyKey(body, ["guest_email", "guestEmail", "customer_email", "customerEmail"])) {
+    throw new ApiError(400, "guestEmail is no longer supported. Sign in to submit a ticket.");
   }
 
   if (categoryInput && !isUuid(categoryInput) && !normalizeCanonicalComplaintCategory(categoryInput)) {
@@ -211,41 +191,10 @@ function parseCreateTicketInput(
     title,
     description,
     ticketType: "Complaint",
-    customerId: authUserId ?? undefined,
-    guestEmail: authUserId ? undefined : guestEmail,
+    customerId: authUserId,
     categoryInput,
     nlpText: buildNlpInputText(title, description),
   };
-}
-
-async function resolveGuestId(supabase: SupabaseServerClient, email: string): Promise<string> {
-  const { data: existing, error: selectError } = await supabase
-    .from("guest_contacts")
-    .select("id")
-    .eq("email", email)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (selectError) {
-    throw new Error(`Failed to look up guest contact: ${selectError.message}`);
-  }
-
-  if (existing?.id) {
-    return String(existing.id);
-  }
-
-  const { data: inserted, error: insertError } = await supabase
-    .from("guest_contacts")
-    .insert({ email })
-    .select("id")
-    .single();
-
-  if (insertError || !inserted?.id) {
-    throw new Error(insertError?.message ?? "Failed to create guest contact.");
-  }
-
-  return String(inserted.id);
 }
 
 async function resolveCategorySelection(
@@ -311,22 +260,20 @@ async function resolveCategorySelection(
   };
 }
 
-async function getNextTicketNumber(supabase: SupabaseServerClient): Promise<string> {
-  const { data, error } = await supabase
-    .from("tickets")
-    .select("ticket_number")
-    .order("submitted_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+function buildRandomCode(length: number, alphabet: string): string {
+  const bytes = randomBytes(length);
+  let value = "";
 
-  if (error) {
-    throw new Error(`Failed to generate ticket number: ${error.message}`);
+  for (let index = 0; index < bytes.length; index += 1) {
+    value += alphabet[bytes[index] % alphabet.length];
   }
 
-  const current = asTrimmedString(data?.ticket_number);
-  const match = /^TKT-(\d+)$/.exec(current);
-  const nextNumber = match ? Number.parseInt(match[1], 10) + 1 : 1;
-  return `TKT-${String(nextNumber).padStart(5, "0")}`;
+  return value;
+}
+
+async function getNextTicketNumber(_supabase: SupabaseServerClient): Promise<string> {
+  const value = buildRandomCode(12, TICKET_REFERENCE_ALPHABET);
+  return `TRK-${value.slice(0, 4)}-${value.slice(4, 8)}-${value.slice(8, 12)}`;
 }
 
 function compactObject<T extends Record<string, unknown>>(obj: T): Partial<T> {
@@ -437,46 +384,6 @@ async function insertTicketWithRetry(
   }
 
   throw new Error(getErrorMessage(lastError) || "Failed to create ticket.");
-}
-
-async function createGuestAccessToken(
-  supabase: SupabaseServerClient,
-  ticketId: string
-): Promise<string | null> {
-  for (let attempt = 1; attempt <= MAX_GUEST_TRACKING_RETRIES; attempt += 1) {
-    const rawToken = buildGuestTrackingCode();
-    const tokenHash = sha256Hex(rawToken);
-
-    const { error: insertError } = await supabase.from("ticket_access_tokens").insert({
-      ticket_id: ticketId,
-      token_hash: tokenHash,
-      expires_at: new Date(Date.now() + GUEST_TOKEN_TTL_MS).toISOString(),
-    });
-
-    if (!insertError) {
-      return rawToken;
-    }
-
-    const code = getErrorCode(insertError);
-    if (code !== "23505") {
-      console.error("Failed to store guest access token:", insertError.message);
-      return null;
-    }
-  }
-
-  console.error("Failed to store guest access token: exceeded retry limit.");
-  return null;
-}
-
-function buildGuestTrackingCode(): string {
-  const bytes = randomBytes(12);
-  let value = "";
-
-  for (let index = 0; index < bytes.length; index += 1) {
-    value += TRACKING_CODE_ALPHABET[bytes[index] % TRACKING_CODE_ALPHABET.length];
-  }
-
-  return `TRK-${value.slice(0, 4)}-${value.slice(4, 8)}-${value.slice(8, 12)}`;
 }
 
 async function uploadAttachmentsForTicket(
@@ -603,7 +510,6 @@ export async function POST(request: Request) {
     const supabase = getSupabaseServerClient();
 
     const category = await resolveCategorySelection(supabase, input.categoryInput);
-    const guestId = input.guestEmail ? await resolveGuestId(supabase, input.guestEmail) : null;
 
     const insertPayload = compactObject({
       ticket_type: input.ticketType,
@@ -614,24 +520,19 @@ export async function POST(request: Request) {
       category_source: category.userProvided ? "user" : "default",
       priority_source: "default",
       customer_id: input.customerId,
-      guest_id: guestId ?? undefined,
     });
 
     const ticket = await insertTicketWithRetry(supabase, insertPayload);
     const ticketId = asTrimmedString(ticket.id);
 
-    const guestAccessToken = ticketId && guestId
-      ? await createGuestAccessToken(supabase, ticketId)
-      : null;
-
     const attachmentsUploaded = ticketId
       ? await uploadAttachmentsForTicket(supabase, ticketId, payload.files)
       : 0;
 
-    const recipientEmail = input.guestEmail ?? asTrimmedString(user?.email);
+    const recipientEmail = asTrimmedString(user?.email);
     await sendTicketCreatedEmailSafe({
       recipientEmail,
-      trackingNumber: guestAccessToken ?? asTrimmedString(ticket.ticket_number),
+      trackingNumber: asTrimmedString(ticket.ticket_number),
       ticketType: input.ticketType,
       ticketId: ticketId || null,
     });
@@ -681,7 +582,6 @@ export async function POST(request: Request) {
           priority: ticket.priority ?? null,
           createdAt: ticket.submitted_at ?? null,
         },
-        ...(guestAccessToken && guestId ? { accessToken: guestAccessToken } : {}),
         attachmentsUploaded,
         nlp,
       },

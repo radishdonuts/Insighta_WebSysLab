@@ -36,6 +36,8 @@ function ConfirmationContent({
   reference: string;
   token: string;
 }) {
+  const displayReference = token || reference;
+  const referenceLabel = token ? "Tracking Number" : "Ticket Reference";
 
   const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : "";
   const viewTicketHref = ticketId
@@ -183,7 +185,7 @@ function ConfirmationContent({
                 textTransform: "uppercase",
               }}
             >
-              Ticket Reference
+              {referenceLabel}
             </p>
             <p
               style={{
@@ -195,7 +197,7 @@ function ConfirmationContent({
                 letterSpacing: "0.1em",
               }}
             >
-              {reference}
+              {displayReference}
             </p>
           </div>
 

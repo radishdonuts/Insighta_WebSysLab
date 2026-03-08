@@ -110,7 +110,7 @@ function TicketDetailPageContent({ params }: { params: { id: string } }) {
 
       try {
         const primaryEndpoint = token
-          ? `/api/ticket/lookup?token=${encodeURIComponent(token)}`
+          ? `/api/ticket/${encodeURIComponent(params.id)}?token=${encodeURIComponent(token)}`
           : `/api/ticket/${encodeURIComponent(params.id)}`;
 
         const primaryResponse = await fetch(primaryEndpoint, { cache: "no-store" });
